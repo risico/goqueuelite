@@ -14,12 +14,13 @@ import (
 type JobStatus int
 
 const (
-	JobStatusReady  JobStatus = 0
-	JobStatusLocked JobStatus = 1
-	JobStatusDone   JobStatus = 2
-	JobStatusFailed JobStatus = 3
+	JobStatusReady JobStatus = iota
+	JobStatusLocked
+	JobStatusDone
+	JobStatusFailed
 )
 
+// preparedStatement is a type to help us keep track of our prepared statements
 type preparedStatement int
 
 const (
@@ -41,6 +42,29 @@ type Message struct {
 	Retries     int
 	ScheduledAt int
 }
+
+type Queue interface {
+	// Enqueue adds a new job to the Queue
+	Enqueue(data any) (int64, error)
+	// EnqueueWithParams adds a new job to the Queue with custom parameters
+	EnqueueWithParams(data any, params EnqueueParams) (int64, error)
+	// Dequeue returns the next job in the Queue
+	Dequeue(namespace string) (*Message, error)
+	// Done marks the job as done
+	Done(id int64) error
+	// Fail marks the job as failed
+	Fail(id int64) error
+	// Retry marks the message as ready to be consumed again
+	Retry(id int64) error
+	// Size returns the size of the queue
+	Size() (int, error)
+	// Prune deletes completed jobs
+	Prune() error
+
+	Close() error
+}
+
+var _ Queue = new(SqliteQueue)
 
 // Params are passed into the Queue and accept external user input
 type Params struct {
@@ -103,7 +127,7 @@ func (ps preparedStatements) Get(s preparedStatement) *sql.Stmt {
 	return ps[s]
 }
 
-func New(params Params) (*SqliteQueue, error) {
+func New(params Params) (Queue, error) {
 	params, err := params.Defaults()
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -267,25 +291,11 @@ func (q *SqliteQueue) Retry(id int64) error {
 // Retry marks the message as ready to be consumed again
 func (q *SqliteQueue) Size() (int, error) {
 	row := q.params.DB.QueryRow(
-		fmt.Sprintf(`SELECT COUNT(*) as qsize FROM queue WHERE job_status NOT IN (%d, %d, %d)`,
-			JobStatusDone, JobStatusFailed, JobStatusLocked))
+		fmt.Sprintf(`SELECT COUNT(*) as qsize FROM queue WHERE job_status %d`, JobStatusReady))
 
 	var queueSize int
 	if err := row.Scan(&queueSize); err != nil {
 		return 0, errors.Trace(err)
-	}
-
-	return queueSize, nil
-}
-
-func (q *SqliteQueue) Empty() (bool, error) {
-	row := q.params.DB.QueryRow(
-		fmt.Sprintf(`SELECT COUNT(*) as qsize FROM queue WHERE job_status = %d`,
-			JobStatusReady))
-
-	var queueSize bool
-	if err := row.Scan(&queueSize); err != nil {
-		return false, errors.Trace(err)
 	}
 
 	return queueSize, nil
