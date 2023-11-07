@@ -9,6 +9,7 @@ import (
 
 	"github.com/juju/errors"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/risico/clock"
 )
 
 type JobStatus int
@@ -33,7 +34,7 @@ const (
 type Message struct {
 	// Data holds the data for this job
 	ID          int64
-	Data        string
+	Data        any
 	Namespace   string
 	Status      JobStatus
 	Delay       uint64
@@ -41,15 +42,14 @@ type Message struct {
 	DoneTime    int
 	Retries     int
 	ScheduledAt int
+	TTL         int
 }
 
 type Queue interface {
-	// Enqueue adds a new job to the Queue
-	Enqueue(data any) (int64, error)
 	// EnqueueWithParams adds a new job to the Queue with custom parameters
-	EnqueueWithParams(data any, params EnqueueParams) (int64, error)
+	Enqueue(data any, params EnqueueParams) (int64, error)
 	// Dequeue returns the next job in the Queue
-	Dequeue(namespace string) (*Message, error)
+	Dequeue(params DequeueParams) (*Message, error)
 	// Done marks the job as done
 	Done(id int64) error
 	// Fail marks the job as failed
@@ -72,6 +72,8 @@ type Params struct {
 	// or if left nil it will try to create it
 	DB *sql.DB
 
+	Clock clock.Clock
+
 	// DatabasePath is the path where the database sits (if no sql.DB is being passed)
 	DatabasePath string
 
@@ -84,9 +86,8 @@ type Params struct {
 	AutoPrune         bool
 	AutoPruneInterval time.Duration
 
-	// MaxRetries will automatically mark the message as failed if it was retried
-	// N times
-	MaxRetries int
+	// DefaultTTL is the default time to live for a job
+	DefaultTTL time.Duration
 }
 
 func (q Params) Defaults() (Params, error) {
@@ -109,6 +110,10 @@ func (q Params) Defaults() (Params, error) {
 		q.DB = db
 	}
 
+	if q.Clock == nil {
+		q.Clock = clock.New()
+	}
+
 	return q, nil
 }
 
@@ -118,6 +123,7 @@ type SqliteQueue struct {
 	// stmts caches our perpared statements
 	stmts preparedStatements
 
+	// closeCh is used to signal the cleanup go routines to stop
 	closeCh chan struct{}
 }
 
@@ -127,25 +133,26 @@ func (ps preparedStatements) Get(s preparedStatement) *sql.Stmt {
 	return ps[s]
 }
 
+// New creates a new Queue
 func New(params Params) (Queue, error) {
 	params, err := params.Defaults()
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	q := &SqliteQueue{
+	q := SqliteQueue{
 		params: &params,
 	}
 
 	err = q.setup()
 	if err != nil {
-		return nil, errors.Trace(err)
+		return nil, errors.Annotate(err, "running setup()")
 	}
 
-	return q, nil
+	return &q, nil
 }
 
-func (q *SqliteQueue) setup() (err error) {
+func (q *SqliteQueue) setup() error {
 	q.closeCh = make(chan struct{})
 
 	tx, err := q.params.DB.Begin()
@@ -153,51 +160,100 @@ func (q *SqliteQueue) setup() (err error) {
 		return errors.Annotate(err, "running setup() Begin()")
 	}
 
-	// roll back the transaction on errors
-	defer func() {
-		if err != nil {
-			err = errors.Wrap(err, tx.Rollback())
-		}
-	}()
-
+	// https://www.sqlite.org/pragma.html#pragma_journal_mode
+	// TODO: should probably make these configurable
 	tx.Exec("PRAGMA journal_mode = 'WAL'")
 	tx.Exec("PRAGMA synchronous = 1;")
 	tx.Exec("PRAGMA temp_store = 2;")
-	tx.Exec("PRAGMA cache_size=100000;")
+	tx.Exec("PRAGMA cache_size = 100000;")
 
 	query := `
         CREATE TABLE IF NOT EXISTS queue (
-          job_namespace            TEXT NOT NULL,
-          job_data                 BLOB NOT NULL,
-          job_status               INTEGER NOT NULL,
-          job_created_at           INTEGER NOT NULL,
-          job_locked_at            INTEGER,
-          job_finished_at          INTEGER,
-          job_retries              INTEGER NOT NULL DEFAULT 0,
-          job_scheduled_at         INTEGER NOT NULL DEFAULT 0
+          job_namespace            TEXT NOT NULL,               /* namespace of the job */
+          job_data                 BLOB NOT NULL,               /* json encoded data */
+          job_status               INTEGER NOT NULL,            /* 0 = ready, 1 = locked, 2 = done, 3 = failed */
+          job_created_at           INTEGER NOT NULL,            /* unix timestamp */
+          job_locked_at            INTEGER,                     /* unix timestamp */
+          job_finished_at          INTEGER,                     /* unix timestamp */
+          job_retries              INTEGER NOT NULL DEFAULT 0,  /* number of times this job has been retried */
+          job_scheduled_at         INTEGER NOT NULL DEFAULT 0,  /* unix timestamp */
+          job_ttl                  INTEGER NOT NULL DEFAULT 0   /* time to live in seconds */
         )
     `
-	tx.Exec(query)
-	tx.Exec("CREATE INDEX IF NOT EXISTS queue_nm_sts_sched_idx ON queue(job_namespace, job_status, job_scheduled_at)")
+	_, err = tx.Exec(query)
+	if err != nil {
+		return errors.Annotate(err, "creating the queue table")
+	}
+
+	_, err = tx.Exec(`
+        CREATE INDEX IF NOT EXISTS
+            queue_namespace_status_scheduled_created_idx
+        ON queue(
+                job_namespace,
+                job_status,
+                job_scheduled_at,
+                job_created_at
+        )
+    `)
+	if err != nil {
+		return errors.Annotate(err, "creating index")
+	}
 
 	err = tx.Commit()
 	if err != nil {
-		return errors.Annotate(err, "running setup transactions")
+		return errors.Annotate(err, "committing the transaction")
 	}
 
 	preparedStatements := map[preparedStatement]string{
-		enqueueStatement: `INSERT INTO
-            queue(job_namespace, job_data, job_status, job_created_at, job_locked_at, job_finished_at, job_scheduled_at)
-            VALUES (?,?,?,?,NULL,NULL,?);`,
+		enqueueStatement: `
+            INSERT INTO
+                queue(
+                    job_namespace,
+                    job_data,
+                    job_status,
+                    job_created_at,
+                    job_locked_at,
+                    job_finished_at,
+                    job_scheduled_at,
+                    job_ttl
+                )
+                VALUES (
+                    ?,       /* namespace    */
+                    ?,       /* data         */
+                    ?,       /* status       */
+                    ?,       /* created_at   */
+                    NULL,    /* locked_at    */
+                    NULL,    /* finished_at  */
+                    ?,       /* scheduled_at */
+                    ?        /* ttl */
+                );`,
 		dequeueStatement: `
-             UPDATE queue SET job_status = ?, job_locked_at = ?
+            UPDATE
+                queue
+            SET
+                job_status = ?,
+                job_locked_at = ?
              WHERE rowid = (
-                 SELECT rowid FROM queue
-                 WHERE job_namespace = ? AND job_status = ? AND job_scheduled_at <= ?
+                 SELECT
+                    rowid
+                 FROM
+                    queue
+                 WHERE
+                    job_namespace = ?
+                    AND job_status = ?
+                    AND job_scheduled_at <= ?
+                    AND strftime('%s', 'now') - job_created_at <= job_ttl
+                 ORDER BY job_created_at ASC
              )
-             RETURNING rowid,*;`,
+             RETURNING rowid, *;`,
 		updateStatusStatement: `
-            UPDATE queue SET job_status = ?, job_finished_at = ? WHERE rowid = ?`,
+            UPDATE
+                queue
+            SET
+                job_status = ?,
+                job_finished_at = ?
+            WHERE
+                rowid = ?`,
 		updateStatusRetryStatement: `
             UPDATE queue
                 SET
@@ -221,9 +277,17 @@ func (q *SqliteQueue) setup() (err error) {
 	return nil
 }
 
+// EnqueueParams are passed into the Queue.Enqueue method
 type EnqueueParams struct {
-	Namespace     string
+	// Namespace is the namespace to enqueue the job to
+	Namespace string
+
+	// ScheduleAfter is the number of seconds to wait before making the job available
+	// for consumption
 	ScheduleAfter time.Duration
+
+	// TTL is the number of seconds to keep the job around available for consumption
+	TTL time.Duration
 }
 
 func (p EnqueueParams) Defaults() EnqueueParams {
@@ -234,15 +298,12 @@ func (p EnqueueParams) Defaults() EnqueueParams {
 	return p
 }
 
-func (q *SqliteQueue) Enqueue(data any) (int64, error) {
-	return q.EnqueueWithParams(data, EnqueueParams{})
-}
-
-func (q *SqliteQueue) EnqueueWithParams(data any, params EnqueueParams) (int64, error) {
+func (q *SqliteQueue) Enqueue(data any, params EnqueueParams) (int64, error) {
 	params = params.Defaults()
+
 	res, err := q.stmts.
 		Get(enqueueStatement).
-		Exec(params.Namespace, data, JobStatusReady, time.Now().Unix(), params.ScheduleAfter)
+		Exec(params.Namespace, data, JobStatusReady, q.params.Clock.Now().Unix(), params.ScheduleAfter, params.TTL)
 
 	if err != nil {
 		return 0, errors.Annotate(err, "calling Put()")
@@ -256,14 +317,32 @@ func (q *SqliteQueue) EnqueueWithParams(data any, params EnqueueParams) (int64, 
 	return id, nil
 }
 
-func (q *SqliteQueue) Dequeue(namespace string) (*Message, error) {
-	var delay, lockTime, doneTime sql.NullInt64
+type DequeueParams struct {
+	// Namespace is the namespace to dequeue from
+	Namespace string
+}
 
+func (p DequeueParams) Defaults() DequeueParams {
+	if p.Namespace == "" {
+		p.Namespace = "default"
+	}
+
+	return p
+}
+
+func (q *SqliteQueue) Dequeue(params DequeueParams) (*Message, error) {
+	params = params.Defaults()
+
+	var delay, lockTime, doneTime sql.NullInt64
 	var message Message
 	err := q.stmts.
 		Get(dequeueStatement).
-		QueryRow(JobStatusLocked, time.Now().Unix(), namespace, JobStatusReady, time.Now().Unix()).
-		Scan(&message.ID, &message.Namespace, &message.Data, &message.Status, &delay, &lockTime, &doneTime, &message.Retries, &message.ScheduledAt)
+		QueryRow(JobStatusLocked, q.params.Clock.Now().Unix(), params.Namespace, JobStatusReady, q.params.Clock.Now().Unix()).
+		Scan(
+			&message.ID, &message.Namespace, &message.Data,
+			&message.Status, &delay, &lockTime,
+			&doneTime, &message.Retries, &message.ScheduledAt, &message.TTL,
+		)
 	if err != nil && errors.Cause(err) != sql.ErrNoRows {
 		return nil, errors.Trace(err)
 	} else if errors.Cause(err) == sql.ErrNoRows {
@@ -291,7 +370,7 @@ func (q *SqliteQueue) Retry(id int64) error {
 // Retry marks the message as ready to be consumed again
 func (q *SqliteQueue) Size() (int, error) {
 	row := q.params.DB.QueryRow(
-		fmt.Sprintf(`SELECT COUNT(*) as qsize FROM queue WHERE job_status %d`, JobStatusReady))
+		fmt.Sprintf(`SELECT COUNT(*) as qsize FROM queue WHERE job_status = %d`, JobStatusReady))
 
 	var queueSize int
 	if err := row.Scan(&queueSize); err != nil {
@@ -303,8 +382,14 @@ func (q *SqliteQueue) Size() (int, error) {
 
 func (q *SqliteQueue) Prune() error {
 	_, err := q.params.DB.Exec(
-		fmt.Sprintf(`DELETE FROM queue WHERE job_status IN (%d, %d)`,
-			JobStatusDone, JobStatusFailed))
+		fmt.Sprintf(`
+            DELETE FROM
+                queue
+            WHERE
+                job_status
+            IN (%d, %d)
+        `, JobStatusDone, JobStatusFailed),
+	)
 
 	return errors.Trace(err)
 }
@@ -333,7 +418,7 @@ func (q *SqliteQueue) setStatus(id int64, status JobStatus) error {
 	stmt := q.stmts.Get(updateStatusStatement)
 
 	if status != JobStatusReady {
-		doneTime = time.Now().Unix()
+		doneTime = q.params.Clock.Now().Unix()
 	} else {
 		stmt = q.stmts.Get(updateStatusRetryStatement)
 	}
@@ -355,11 +440,11 @@ func (q *SqliteQueue) cleanup() {
 
 func (q *SqliteQueue) autovacuum() {
 	if q.params.AutoVacuum {
-		var ticker *time.Ticker
+		var ticker *clock.Ticker
 		if q.params.AutoVacuumInterval != 0 {
-			ticker = time.NewTicker(q.params.AutoVacuumInterval)
+			ticker = q.params.Clock.Ticker(q.params.AutoVacuumInterval)
 		} else {
-			ticker = time.NewTicker(10 * time.Hour)
+			ticker = q.params.Clock.Ticker(10 * time.Hour)
 		}
 
 		go func() {
@@ -378,11 +463,11 @@ func (q *SqliteQueue) autovacuum() {
 }
 func (q *SqliteQueue) autoprune() {
 	if q.params.AutoPrune {
-		var ticker *time.Ticker
+		var ticker *clock.Ticker
 		if q.params.AutoPruneInterval != 0 {
-			ticker = time.NewTicker(q.params.AutoPruneInterval)
+			ticker = q.params.Clock.Ticker(q.params.AutoPruneInterval)
 		} else {
-			ticker = time.NewTicker(10 * time.Hour)
+			ticker = q.params.Clock.Ticker(10 * time.Hour)
 		}
 
 		go func() {
