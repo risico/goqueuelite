@@ -32,8 +32,8 @@ const (
 )
 
 type Message struct {
-	// Data holds the data for this job
 	ID          int64
+	// Data holds the data for this job
 	Data        any
 	Namespace   string
 	Status      JobStatus
@@ -292,17 +292,28 @@ type EnqueueParams struct {
 }
 
 // Defaults sets the default values for the EnqueueParams
-func (p EnqueueParams) Defaults() EnqueueParams {
+func (p EnqueueParams) Defaults() (EnqueueParams, error) {
 	if p.Namespace == "" {
 		p.Namespace = "default"
 	}
 
-	return p
+    if p.ScheduleAfter < 0 {
+        p.ScheduleAfter = 0
+    }
+
+    if p.TTL < 0 {
+        p.TTL = 0
+    }
+
+	return p, nil
 }
 
 // Enqueue adds a new job to the Queue
 func (q *SqliteQueue) Enqueue(data any, params EnqueueParams) (int64, error) {
-	params = params.Defaults()
+    params, err := params.Defaults()
+    if err != nil {
+        return 0, errors.Trace(err)
+    }
 
 	res, err := q.stmts.
 		With(enqueueStatement).
