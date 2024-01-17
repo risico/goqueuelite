@@ -12,5 +12,6 @@ require (
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/risico/clock v0.0.0-20230518180128-412105d1b085 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

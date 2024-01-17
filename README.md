@@ -42,29 +42,49 @@ func main() {
 ## Enqueuing a Job
 ```go
 data := "Your job data here"
-id, err := queue.Enqueue(data)
-if err != nil {
-	// handle error
+params := squeuelite.EnqueueParams{
+    Namespace: "test_namespace",
+    ScheduleAfter: time.Now().Add(1 * time.Hour),
+    TTL: 2 * time.Hour,
 }
+id, err := queue.Enqueue(data, params)
+if err != nil {}
 ```
 
 ## Dequeueing a Job
 ```go
-namespace := "default"
-message, err := queue.Dequeue(namespace)
-if err != nil {
-	// handle error
+params := squeuelite.DequeueParams{
+    Namespace: "default",
+}
+message, err := queue.Dequeue(params)
+if err != nil {}
+fmt.Printf("Message(%+v) \n", message)
+```
+
+### Message Payload
+```go
+type Message struct {
+	ID          int64
+	Data        any
+	Namespace   string
+	Status      JobStatus
+	Delay       uint64
+	LockTime    int
+	DoneTime    int
+	Retries     int
+	ScheduledAt int
+	TTL         int
 }
 ```
 
 ## Marking a Job as Done or Failed
 ```go
-err = queue.Done(jobID)
+err = queue.Done(messageID)
 if err != nil {
 	// handle error
 }
 
-err = queue.Fail(jobID)
+err = queue.Fail(messageID)
 if err != nil {
 	// handle error
 }
@@ -72,7 +92,7 @@ if err != nil {
 
 ## Retrying a job
 ```go
-err = queue.Retry(jobID)
+err = queue.Retry(messageID)
 if err != nil {
 	// handle error
 }
@@ -81,32 +101,19 @@ if err != nil {
 ## Getting the size of the queue
 ```go
 size, err := queue.Size()
-if err != nil {
-	// handle error
-}
 ```
 
 ## Checking if the queue is empty
 ```go
 isEmpty, err := queue.Empty()
-if err != nil {
-	// handle error
-}
 ```
 
 ## Manual Pruning and Vacuuming
 If you have disabled AutoPrune and AutoVacuum, you can manually prune and vacuum the database.
 
 ```go
-err = queue.Prune()
-if err != nil {
-	// handle error
-}
-
-err = queue.Vacuum()
-if err != nil {
-	// handle error
-}
+queue.Prune()
+queue.Vacuum()
 ```
 
 
