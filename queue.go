@@ -90,6 +90,7 @@ type Params struct {
 	DefaultTTL time.Duration
 }
 
+// Defaults sets the default values for the Params
 func (q Params) Defaults() (Params, error) {
 	if q.DatabasePath == "" {
 		q.DatabasePath = "file:queue.db"
@@ -129,7 +130,7 @@ type SqliteQueue struct {
 
 type preparedStatements map[preparedStatement]*sql.Stmt
 
-func (ps preparedStatements) Get(s preparedStatement) *sql.Stmt {
+func (ps preparedStatements) With(s preparedStatement) *sql.Stmt {
 	return ps[s]
 }
 
@@ -242,7 +243,7 @@ func (q *SqliteQueue) setup() error {
                     job_namespace = ?
                     AND job_status = ?
                     AND job_scheduled_at <= ?
-                    AND strftime('%s', 'now') - job_created_at <= job_ttl
+                    AND (job_ttl = 0 OR (? - job_created_at <= job_ttl))
                  ORDER BY job_created_at ASC
              )
              RETURNING rowid, *;`,
@@ -290,6 +291,7 @@ type EnqueueParams struct {
 	TTL time.Duration
 }
 
+// Defaults sets the default values for the EnqueueParams
 func (p EnqueueParams) Defaults() EnqueueParams {
 	if p.Namespace == "" {
 		p.Namespace = "default"
@@ -298,12 +300,20 @@ func (p EnqueueParams) Defaults() EnqueueParams {
 	return p
 }
 
+// Enqueue adds a new job to the Queue
 func (q *SqliteQueue) Enqueue(data any, params EnqueueParams) (int64, error) {
 	params = params.Defaults()
 
 	res, err := q.stmts.
-		Get(enqueueStatement).
-		Exec(params.Namespace, data, JobStatusReady, q.params.Clock.Now().Unix(), params.ScheduleAfter, params.TTL)
+		With(enqueueStatement).
+		Exec(
+			params.Namespace,
+			data,
+			JobStatusReady,
+			q.params.Clock.Now().Unix(), // created_at
+			params.ScheduleAfter,
+			params.TTL.Seconds(),
+		)
 
 	if err != nil {
 		return 0, errors.Annotate(err, "calling Put()")
@@ -330,18 +340,36 @@ func (p DequeueParams) Defaults() DequeueParams {
 	return p
 }
 
+// Dequeue
 func (q *SqliteQueue) Dequeue(params DequeueParams) (*Message, error) {
 	params = params.Defaults()
 
-	var delay, lockTime, doneTime sql.NullInt64
-	var message Message
+	var (
+		delay, lockTime, doneTime sql.NullInt64
+		message                   Message
+		now                       = q.params.Clock.Now().Unix()
+	)
 	err := q.stmts.
-		Get(dequeueStatement).
-		QueryRow(JobStatusLocked, q.params.Clock.Now().Unix(), params.Namespace, JobStatusReady, q.params.Clock.Now().Unix()).
+		With(dequeueStatement).
+		QueryRow(
+			JobStatusLocked,
+			now,
+			params.Namespace,
+			JobStatusReady,
+			now,
+			now,
+		).
 		Scan(
-			&message.ID, &message.Namespace, &message.Data,
-			&message.Status, &delay, &lockTime,
-			&doneTime, &message.Retries, &message.ScheduledAt, &message.TTL,
+			&message.ID,
+			&message.Namespace,
+			&message.Data,
+			&message.Status,
+			&delay,
+			&lockTime,
+			&doneTime,
+			&message.Retries,
+			&message.ScheduledAt,
+			&message.TTL,
 		)
 	if err != nil && errors.Cause(err) != sql.ErrNoRows {
 		return nil, errors.Trace(err)
@@ -388,6 +416,9 @@ func (q *SqliteQueue) Prune() error {
             WHERE
                 job_status
             IN (%d, %d)
+            OR (
+                job_ttl != 0 AND ? - job_created_at > job_ttl
+            )
         `, JobStatusDone, JobStatusFailed),
 	)
 
@@ -415,12 +446,12 @@ func (q *SqliteQueue) Close() error {
 func (q *SqliteQueue) setStatus(id int64, status JobStatus) error {
 	var doneTime int64
 
-	stmt := q.stmts.Get(updateStatusStatement)
+	stmt := q.stmts.With(updateStatusStatement)
 
 	if status != JobStatusReady {
 		doneTime = q.params.Clock.Now().Unix()
 	} else {
-		stmt = q.stmts.Get(updateStatusRetryStatement)
+		stmt = q.stmts.With(updateStatusRetryStatement)
 	}
 
 	_, err := stmt.Exec(status, doneTime, id)
@@ -452,7 +483,9 @@ func (q *SqliteQueue) autovacuum() {
 				select {
 				case <-ticker.C:
 					err := q.Vacuum()
-					log.Println(err)
+					if err != nil {
+						log.Println(err)
+					}
 				case <-q.closeCh:
 					ticker.Stop()
 					return
@@ -461,6 +494,7 @@ func (q *SqliteQueue) autovacuum() {
 		}()
 	}
 }
+
 func (q *SqliteQueue) autoprune() {
 	if q.params.AutoPrune {
 		var ticker *clock.Ticker
@@ -475,7 +509,9 @@ func (q *SqliteQueue) autoprune() {
 				select {
 				case <-ticker.C:
 					err := q.Prune()
-					log.Println(err)
+					if err != nil {
+						log.Println(err)
+					}
 				case <-q.closeCh:
 					ticker.Stop()
 					return

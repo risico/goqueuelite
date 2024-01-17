@@ -37,27 +37,36 @@ func TestTTL(t *testing.T) {
 	t.Parallel()
 
 	mClock := clock.NewMock()
-
 	q, err := squeuelite.New(squeuelite.Params{
 		DatabasePath: ":memory:",
 		Clock:        mClock,
 	})
 	assert.NoError(t, err)
 
+    // Enque an item that has a TTL of 10 seconds
 	id, err := q.Enqueue("something", squeuelite.EnqueueParams{
-		TTL: 1 * time.Second,
+		TTL: 10 * time.Second,
 	})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
+
+    // It should receive the item
 	message, err := q.Dequeue(squeuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.NotNil(t, message)
-
 	if message != nil {
 		err = q.Done(id)
 		assert.NoError(t, err)
 	}
 
+
+	_, err = q.Enqueue("something", squeuelite.EnqueueParams{
+		TTL: 10 * time.Second,
+	})
+	assert.NoError(t, err)
+
+    // Advance the clock by 10 seconds
+    mClock.Add(12 * time.Second)
 	message, err = q.Dequeue(squeuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.Nil(t, message)
