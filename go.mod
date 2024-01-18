@@ -1,4 +1,4 @@
-module github.com/risico/squeuelite
+module github.com/risico/goqueuelite
 
 go 1.20
 

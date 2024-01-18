@@ -1,4 +1,4 @@
-package squeuelite_test
+package goqueuelite_test
 
 import (
 	"testing"
@@ -8,20 +8,20 @@ import (
 
 	"github.com/risico/clock"
 
-	"github.com/risico/squeuelite"
+	"github.com/risico/goqueuelite"
 )
 
-func TestSqueueLite(t *testing.T) {
+func TestGoqueueLite(t *testing.T) {
 	t.Parallel()
-	q, err := squeuelite.New(squeuelite.Params{
+	q, err := goqueuelite.New(goqueuelite.Params{
 		DatabasePath: ":memory:",
 	})
 	assert.NoError(t, err)
 
-	id, err := q.Enqueue("something", squeuelite.EnqueueParams{})
+	id, err := q.Enqueue("something", goqueuelite.EnqueueParams{})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
-	message, err := q.Dequeue(squeuelite.DequeueParams{})
+	message, err := q.Dequeue(goqueuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.NotNil(t, message)
 
@@ -37,21 +37,21 @@ func TestTTL(t *testing.T) {
 	t.Parallel()
 
 	mClock := clock.NewMock()
-	q, err := squeuelite.New(squeuelite.Params{
+	q, err := goqueuelite.New(goqueuelite.Params{
 		DatabasePath: ":memory:",
 		Clock:        mClock,
 	})
 	assert.NoError(t, err)
 
     // Enque an item that has a TTL of 10 seconds
-	id, err := q.Enqueue("something", squeuelite.EnqueueParams{
+	id, err := q.Enqueue("something", goqueuelite.EnqueueParams{
 		TTL: 10 * time.Second,
 	})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
 
     // It should receive the item
-	message, err := q.Dequeue(squeuelite.DequeueParams{})
+	message, err := q.Dequeue(goqueuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.NotNil(t, message)
 	if message != nil {
@@ -60,23 +60,23 @@ func TestTTL(t *testing.T) {
 	}
 
 
-	_, err = q.Enqueue("something", squeuelite.EnqueueParams{
+	_, err = q.Enqueue("something", goqueuelite.EnqueueParams{
 		TTL: 10 * time.Second,
 	})
 	assert.NoError(t, err)
 
     // Advance the clock by 10 seconds
     mClock.Add(12 * time.Second)
-	message, err = q.Dequeue(squeuelite.DequeueParams{})
+	message, err = q.Dequeue(goqueuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.Nil(t, message)
 
 	q.Close()
 }
 
-func TestSqueueLiteSize(t *testing.T) {
+func TestGoqueueLiteSize(t *testing.T) {
 	t.Parallel()
-	q, err := squeuelite.New(squeuelite.Params{
+	q, err := goqueuelite.New(goqueuelite.Params{
 		DatabasePath: ":memory:",
 	})
 	assert.NoError(t, err)
@@ -85,7 +85,7 @@ func TestSqueueLiteSize(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, size)
 
-	_, err = q.Enqueue("something", squeuelite.EnqueueParams{})
+	_, err = q.Enqueue("something", goqueuelite.EnqueueParams{})
 	assert.NoError(t, err)
 
 	size, err = q.Size()
@@ -95,35 +95,35 @@ func TestSqueueLiteSize(t *testing.T) {
 	q.Close()
 }
 
-func TestSqueueLiteDequeue(t *testing.T) {
+func TestGoqueueLiteDequeue(t *testing.T) {
 	t.Parallel()
-	q, err := squeuelite.New(squeuelite.Params{
+	q, err := goqueuelite.New(goqueuelite.Params{
 		DatabasePath: ":memory:",
 	})
 	assert.NoError(t, err)
 
-	message, err := q.Dequeue(squeuelite.DequeueParams{})
+	message, err := q.Dequeue(goqueuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.Nil(t, message)
 
-	_, err = q.Enqueue("something", squeuelite.EnqueueParams{})
+	_, err = q.Enqueue("something", goqueuelite.EnqueueParams{})
 	assert.NoError(t, err)
 
-	message, err = q.Dequeue(squeuelite.DequeueParams{})
+	message, err = q.Dequeue(goqueuelite.DequeueParams{})
 	assert.NoError(t, err)
 	assert.NotNil(t, message)
 
 	q.Close()
 }
 
-func TestSqueueLiteDone(t *testing.T) {
+func TestGoqueueLiteDone(t *testing.T) {
 	t.Parallel()
-	q, err := squeuelite.New(squeuelite.Params{
+	q, err := goqueuelite.New(goqueuelite.Params{
 		DatabasePath: ":memory:",
 	})
 	assert.NoError(t, err)
 
-	id, err := q.Enqueue("something", squeuelite.EnqueueParams{})
+	id, err := q.Enqueue("something", goqueuelite.EnqueueParams{})
 	assert.NoError(t, err)
 
 	err = q.Done(id)
@@ -132,16 +132,16 @@ func TestSqueueLiteDone(t *testing.T) {
 	q.Close()
 }
 
-// func TestSqueueLiteLoad(t *testing.T) {
+// func TestGoqueueLiteLoad(t *testing.T) {
 // 	t.Parallel()
 // 	defer os.Remove("test.db")
-// 	q, err := squeuelite.New(squeuelite.Params{
+// 	q, err := goqueuelite.New(goqueuelite.Params{
 // 		DatabasePath: "test.db",
 // 	})
 // 	assert.NoError(t, err)
 //
 // 	for x := 0; x < 100_000; x++ {
-// 		_, err := q.Enqueue(x, squeuelite.EnqueueParams{})
+// 		_, err := q.Enqueue(x, goqueuelite.EnqueueParams{})
 // 		require.NoError(t, err)
 // 	}
 //
@@ -155,7 +155,7 @@ func TestSqueueLiteDone(t *testing.T) {
 // 		go func() {
 // 			defer wg.Done()
 // 			for x := 0; x <= 10_000; x++ {
-// 				m, err := q.Dequeue(squeuelite.DequeueParams{})
+// 				m, err := q.Dequeue(goqueuelite.DequeueParams{})
 // 				assert.NoError(t, err)
 //
 // 				if m == nil {

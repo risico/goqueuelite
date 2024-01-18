@@ -1,4 +1,4 @@
-package squeuelite
+package goqueuelite
 
 import (
 	"database/sql"
