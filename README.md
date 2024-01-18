@@ -1,7 +1,7 @@
 <p align="center">
-<h1>squeuelite</h1>
-<img width="400px" src="https://i.imgur.com/vk0HXPE.png" alt="squeuelito" />
-Tiny little queue on top of SQLite written in Go.
+<h1>GoQueueLite</h1>
+<img width="400px" src="https://i.imgur.com/vk0HXPE.png" alt="goqueuelito" />
+    Tiny little queue on top of SQLite written in Go.
 </p>
 
 sQueueLite is a simplistic, SQLite backed job embedded queue library for Go applications.
@@ -15,7 +15,7 @@ It provides an easy way to manage and process background jobs, facilitating the 
 
 # Installation
 ```
-go get github.com/risico/squeuelite
+go get github.com/risico/goqueuelite
 ```
 
 # Usage
@@ -23,15 +23,15 @@ go get github.com/risico/squeuelite
 ```go
 package main
 
-import "github.com/risico/squeuelite"
+import "github.com/risico/goqueuelite"
 
 func main() {
-	params := squeuelite.Params{
+	params := goqueuelite.Params{
 		DatabasePath: "queue.db",
 		AutoVacuum:   true,
 		AutoPrune:    true,
 	}
-	queue, err := squeuelite.New(params)
+	queue, err := goqueuelite.New(params)
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +42,7 @@ func main() {
 ## Enqueuing a Job
 ```go
 data := "Your job data here"
-params := squeuelite.EnqueueParams{
+params := goqueuelite.EnqueueParams{
     Namespace: "test_namespace",
     ScheduleAfter: time.Now().Add(1 * time.Hour),
     TTL: 2 * time.Hour,
@@ -53,7 +53,7 @@ if err != nil {}
 
 ## Dequeueing a Job
 ```go
-params := squeuelite.DequeueParams{
+params := goqueuelite.DequeueParams{
     Namespace: "default",
 }
 message, err := queue.Dequeue(params)
