@@ -26,13 +26,14 @@ type preparedStatement int
 
 const (
 	enqueueStatement preparedStatement = iota
+	lockStatement
 	dequeueStatement
 	updateStatusStatement
 	updateStatusRetryStatement
 )
 
 type Message struct {
-	ID          int64
+	ID int64
 	// Data holds the data for this job
 	Data        any
 	Namespace   string
@@ -45,6 +46,9 @@ type Message struct {
 	TTL         int
 }
 
+type MessagesCh chan EnqueuedMessageEvent
+
+// Queue describes the main interface of the queue system
 type Queue interface {
 	// EnqueueWithParams adds a new job to the Queue with custom parameters
 	Enqueue(data any, params EnqueueParams) (int64, error)
@@ -58,9 +62,11 @@ type Queue interface {
 	Retry(id int64) error
 	// Size returns the size of the queue
 	Size() (int, error)
+    Lock(messageID int64) (*Message, error)
+	Subscribe(namespace string) (MessagesCh, error)
 	// Prune deletes completed jobs
 	Prune() error
-
+	// Close clears the auto matically clean system and db file handles
 	Close() error
 }
 
@@ -118,11 +124,21 @@ func (q Params) Defaults() (Params, error) {
 	return q, nil
 }
 
+type subscribeEvent struct {
+	namespace string
+	ch        MessagesCh
+}
+
 type SqliteQueue struct {
 	params *Params
 
 	// stmts caches our perpared statements
 	stmts preparedStatements
+
+	subscribeEventsCh chan subscribeEvent
+	subscribers       map[string]MessagesCh
+
+	enqueuedMessagesCh chan EnqueuedMessageEvent
 
 	// closeCh is used to signal the cleanup go routines to stop
 	closeCh chan struct{}
@@ -142,7 +158,10 @@ func New(params Params) (Queue, error) {
 	}
 
 	q := SqliteQueue{
-		params: &params,
+		params:             &params,
+		subscribeEventsCh:  make(chan subscribeEvent, 1024),
+		subscribers:        make(map[string]MessagesCh, 1024),
+		enqueuedMessagesCh: make(chan EnqueuedMessageEvent, 1024),
 	}
 
 	err = q.setup()
@@ -228,6 +247,15 @@ func (q *SqliteQueue) setup() error {
                     ?,       /* scheduled_at */
                     ?        /* ttl */
                 );`,
+        lockStatement: `
+            UPDATE
+                queue
+            SET
+                job_status = ?,
+                job_locked_at = ?
+            WHERE rowid = ?
+            RETURNING rowid, *;
+        `,
 		dequeueStatement: `
             UPDATE
                 queue
@@ -274,8 +302,71 @@ func (q *SqliteQueue) setup() error {
 	}
 
 	q.cleanup()
+	go q.work()
 
 	return nil
+}
+
+func (q *SqliteQueue) Lock(messageID int64) (*Message, error) {
+	var (
+		delay, lockTime, doneTime sql.NullInt64
+		message                   Message
+		now                       = q.params.Clock.Now().Unix()
+	)
+	err := q.stmts.
+		With(lockStatement).
+		QueryRow(
+			JobStatusLocked,
+			now,
+            messageID,
+		).
+		Scan(
+			&message.ID,
+			&message.Namespace,
+			&message.Data,
+			&message.Status,
+			&delay,
+			&lockTime,
+			&doneTime,
+			&message.Retries,
+			&message.ScheduledAt,
+			&message.TTL,
+		)
+	if err != nil && errors.Cause(err) != sql.ErrNoRows {
+		return nil, errors.Trace(err)
+	} else if errors.Cause(err) == sql.ErrNoRows {
+		return nil, nil
+	}
+
+    return &message, nil
+}
+
+func (s *SqliteQueue) Subscribe(namespace string) (MessagesCh, error) {
+	ch := make(MessagesCh, 1024)
+	s.subscribers[namespace] = ch
+	s.subscribeEventsCh <- subscribeEvent{namespace: namespace, ch: ch}
+	return ch, nil
+}
+
+func (s *SqliteQueue) work() {
+	for {
+		select {
+		case e := <-s.subscribeEventsCh:
+			s.subscribers[e.namespace] = e.ch
+        case me := <-s.enqueuedMessagesCh:
+            if len(s.subscribers) > 0 {
+                if ch, ok := s.subscribers[me.Namespace]; ok {
+                    select {
+                    case ch <- me:
+                    case <-time.After(5 * time.Second):
+                        // TODO: log
+                    }
+                }
+            }
+		case <-s.closeCh:
+			return
+		}
+	}
 }
 
 // EnqueueParams are passed into the Queue.Enqueue method
@@ -297,23 +388,28 @@ func (p EnqueueParams) Defaults() (EnqueueParams, error) {
 		p.Namespace = "default"
 	}
 
-    if p.ScheduleAfter < 0 {
-        p.ScheduleAfter = 0
-    }
+	if p.ScheduleAfter < 0 {
+		p.ScheduleAfter = 0
+	}
 
-    if p.TTL < 0 {
-        p.TTL = 0
-    }
+	if p.TTL < 0 {
+		p.TTL = 0
+	}
 
 	return p, nil
 }
 
+type EnqueuedMessageEvent struct {
+	MessageID int64
+	Namespace string
+}
+
 // Enqueue adds a new job to the Queue
 func (q *SqliteQueue) Enqueue(data any, params EnqueueParams) (int64, error) {
-    params, err := params.Defaults()
-    if err != nil {
-        return 0, errors.Trace(err)
-    }
+	params, err := params.Defaults()
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
 
 	res, err := q.stmts.
 		With(enqueueStatement).
@@ -333,6 +429,11 @@ func (q *SqliteQueue) Enqueue(data any, params EnqueueParams) (int64, error) {
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, errors.Trace(err)
+	}
+
+	q.enqueuedMessagesCh <- EnqueuedMessageEvent{
+		MessageID: id,
+		Namespace: params.Namespace,
 	}
 
 	return id, nil

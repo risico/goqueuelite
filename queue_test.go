@@ -95,6 +95,33 @@ func TestGoqueueLiteSize(t *testing.T) {
 	q.Close()
 }
 
+
+func TestGoqueueLiteSubscribe(t *testing.T) {
+	t.Parallel()
+	q, err := goqueuelite.New(goqueuelite.Params{
+		DatabasePath: ":memory:",
+	})
+	assert.NoError(t, err)
+
+    ch, err := q.Subscribe("default")
+	assert.NoError(t, err)
+    assert.NotNil(t, ch)
+
+	_, err = q.Enqueue("default", goqueuelite.EnqueueParams{})
+	assert.NoError(t, err)
+
+    m := <-ch
+    assert.NotNil(t, m)
+    assert.NotZero(t, m.MessageID)
+    assert.Equal(t, m.Namespace, "default")
+
+    mm, err := q.Lock(m.MessageID)
+    assert.NoError(t, err)
+    assert.Equal(t, m.MessageID, mm.ID)
+
+	q.Close()
+}
+
 func TestGoqueueLiteDequeue(t *testing.T) {
 	t.Parallel()
 	q, err := goqueuelite.New(goqueuelite.Params{
