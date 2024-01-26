@@ -77,6 +77,24 @@ type Message struct {
 }
 ```
 
+## Subscribe to namespaces
+```go
+ch, err = queue.Subscribe("default")
+if err != nil { }
+
+for {
+    select {
+        case mEvent, ok := <-ch:
+            if !ok {
+                return
+            }
+
+            m, err := queue.Lock(mEvent.MessageID)
+            // do something with m
+    }
+}
+```
+
 ## Marking a Job as Done or Failed
 ```go
 err = queue.Done(messageID)
