@@ -1,6 +1,6 @@
 module github.com/risico/goqueuelite
 
-go 1.20
+go 1.21
 
 require (
 	github.com/juju/errors v1.0.0
