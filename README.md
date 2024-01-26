@@ -134,6 +134,13 @@ queue.Prune()
 queue.Vacuum()
 ```
 
+# To CGO or to Not CGO
+CGO is required and enabled by default as the package makes use of github.com/mattn/go-sqlite3 but if you require cross-compilation and don't want to bother with  
+CGO you can set the -tags nocgo (alongside CGO_ENABLED=0) and it will switch to using modernc.org/sqlite which does not require CGO.
+
+```
+go build . -tags nocgo
+```
 
 ### Contributing
 Feel free to contribute to this project by opening issues or submitting pull requests for bug fixes or features.
