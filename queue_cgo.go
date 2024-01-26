@@ -22,17 +22,7 @@ func init() {
 	sql.Register("cgo_sqlite3",
 		&sqlite3.SQLiteDriver{
 			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-				_, err := conn.Exec(`
-					PRAGMA busy_timeout       = 10000;
-					PRAGMA journal_mode       = WAL;
-					PRAGMA journal_size_limit = 200000000;
-					PRAGMA synchronous        = NORMAL;
-					PRAGMA foreign_keys       = ON;
-					PRAGMA temp_store         = MEMORY;
-					PRAGMA cache_size         = -16000;
-				`, nil)
-
-				return err
+				return nil
 			},
 		},
 	)

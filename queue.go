@@ -188,11 +188,15 @@ func (q *SqliteQueue) setup() error {
 	}
 
 	// https://www.sqlite.org/pragma.html#pragma_journal_mode
-	// TODO: should probably make these configurable
-	tx.Exec("PRAGMA journal_mode = 'WAL'")
-	tx.Exec("PRAGMA synchronous = 1;")
-	tx.Exec("PRAGMA temp_store = 2;")
-	tx.Exec("PRAGMA cache_size = 100000;")
+    tx.Exec(`
+        PRAGMA busy_timeout       = 10000;
+        PRAGMA journal_mode       = WAL;
+        PRAGMA journal_size_limit = 200000000;
+        PRAGMA synchronous        = NORMAL;
+        PRAGMA foreign_keys       = ON;
+        PRAGMA temp_store         = MEMORY;
+        PRAGMA cache_size         = -16000;
+    `)
 
 	query := `
         CREATE TABLE IF NOT EXISTS queue (
