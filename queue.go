@@ -103,10 +103,10 @@ func (q Params) Defaults() (Params, error) {
 	params := "?_txlock=immediate&_journal_mode=wal"
 
 	if q.DB == nil {
-		db, err := sql.Open("sqlite3", fmt.Sprintf("%s%s", q.DatabasePath, params))
-		if err != nil {
-			return q, errors.Annotate(err, "opening the database at "+q.DatabasePath)
-		}
+        db, err := openDB(fmt.Sprintf("%s%s", q.DatabasePath, params))
+        if err != nil {
+            return q, errors.Annotate(err, "opening the database at "+q.DatabasePath)
+        }
 
 		q.DB = db
 	}
