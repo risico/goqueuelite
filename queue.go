@@ -62,7 +62,14 @@ type Queue interface {
 	Retry(id int64) error
 	// Size returns the size of the queue
 	Size() (int, error)
+    // Lock provides direct access to lock the message.
+    // This is used mostly by the subscription mechanism.
     Lock(messageID int64) (*Message, error)
+    // Subscribe returns a channel that will receive messages as they are enqueued
+    // this provides a simple way to implement pub/sub.
+    // Note that the jobs are not consumed from the queue, they are just sent to the
+    // channel as they are enqueued and if work needs to happen on them you'd have to lock
+    // them using the Lock(id) method.
 	Subscribe(namespace string) (MessagesCh, error)
 	// Prune deletes completed jobs
 	Prune() error
