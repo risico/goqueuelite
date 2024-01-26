@@ -30,7 +30,5 @@ func openDB(dsn string) (*sql.DB, error) {
         return nil, errors.Trace(err)
     }
 
-    fmt.Println("sqlite3 driver is used")
-
     return db, nil
 }
